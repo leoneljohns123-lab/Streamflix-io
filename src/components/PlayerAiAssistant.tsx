@@ -74,8 +74,12 @@ export function PlayerAiAssistant({ context }: { context: PlayerMediaContext }) 
     ]);
   }, [context.title, context.mediaType, context.season, context.episode, context.episodeName]);
 
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   }, [messages, sending]);
 
   const handleAsk = async (questionText?: string) => {
@@ -207,7 +211,7 @@ export function PlayerAiAssistant({ context }: { context: PlayerMediaContext }) 
       </div>
 
       {/* Chat Messages Area */}
-      <div className="flex-1 space-y-3.5 overflow-y-auto p-4 [scrollbar-width:thin]">
+      <div ref={chatContainerRef} className="flex-1 space-y-3.5 overflow-y-auto p-4 [scrollbar-width:thin]">
         {messages.map((msg) => (
           <div
             key={msg.id}

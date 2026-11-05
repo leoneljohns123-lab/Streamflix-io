@@ -199,7 +199,7 @@ export function WatchPartyPanel({
   >([]);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   const activeSecondsRef = useRef<number>(activeSeconds);
   const autoSyncRef = useRef<boolean>(autoSync);
 
@@ -229,9 +229,11 @@ export function WatchPartyPanel({
     }
   }, [roomId, fetchActiveRooms]);
 
-  // Auto-scroll chat feed
+  // Auto-scroll chat feed container (without scrolling the browser window)
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   }, [messages]);
 
   // Check self-muted status
@@ -1410,7 +1412,7 @@ export function WatchPartyPanel({
       {inRoomTab === 'chat' && (
         <>
           {/* Live Chat Messages Feed */}
-      <div className="flex-1 space-y-2.5 overflow-y-auto p-3.5 [scrollbar-width:thin]">
+      <div ref={chatContainerRef} className="flex-1 space-y-2.5 overflow-y-auto p-3.5 [scrollbar-width:thin]">
         {messages.length === 0 ? (
           <div className="py-12 text-center text-xs text-slate-500">
             Share the invite link or room code <strong className="text-white">{roomId}</strong> to watch and chat together!
@@ -1515,7 +1517,6 @@ export function WatchPartyPanel({
             );
           })
         )}
-        <div ref={chatEndRef} />
       </div>
 
       {/* Live Emoji Reactions Strip */}

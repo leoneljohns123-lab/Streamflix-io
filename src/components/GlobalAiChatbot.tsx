@@ -60,11 +60,11 @@ export function GlobalAiChatbot() {
 
   const { history } = useWatchHistory();
   const { watchlist, toggleWatchlist, isInWatchlist } = useWatchlist();
-  const scrollEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isOpen && chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages, isOpen, sending]);
 
@@ -264,7 +264,7 @@ export function GlobalAiChatbot() {
           </div>
 
           {/* Messages Feed */}
-          <div className="flex-1 space-y-4 overflow-y-auto p-4 [scrollbar-width:thin]">
+          <div ref={chatContainerRef} className="flex-1 space-y-4 overflow-y-auto p-4 [scrollbar-width:thin]">
             {messages.map((msg) => (
               <div
                 key={msg.id}
@@ -388,8 +388,6 @@ export function GlobalAiChatbot() {
                 </div>
               </div>
             )}
-
-            <div ref={scrollEndRef} />
           </div>
 
           {/* Input Bar */}

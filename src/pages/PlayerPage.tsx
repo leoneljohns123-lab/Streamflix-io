@@ -88,13 +88,13 @@ export function PlayerPage({
   const [data, setData] = useState<TmdbMovie | TmdbTv | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Preferred provider (default to Fast Embed.su for smooth zero-loop streaming)
+  // Preferred provider (default to Fast HD XPass)
   const [provider, setProvider] = useState<ProviderKey>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('streamflix_preferred_provider') as ProviderKey;
       if (stored && PROVIDERS.some((p) => p.key === stored)) return stored;
     }
-    return 'embed_su';
+    return 'xpass';
   });
 
   const [playerKey, setPlayerKey] = useState(0);
@@ -163,6 +163,17 @@ export function PlayerPage({
     initialPartyCode ? 'watchparty' : 'ai'
   );
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
+
+  // Keep player at the very top of the page on mount or episode switch
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+      const raf = requestAnimationFrame(() => {
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [tmdbId, mediaType, selectedSeason, selectedEpisode]);
   const seasonDropdownRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<HTMLDivElement>(null);
   const companionSectionRef = useRef<HTMLDivElement>(null);
