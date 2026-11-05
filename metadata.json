@@ -1,0 +1,6 @@
+{
+  "name": "StreamFlix",
+  "description": "Modern streaming platform for movies and TV shows with multiple player providers, watchlist, and personalized recommendations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
