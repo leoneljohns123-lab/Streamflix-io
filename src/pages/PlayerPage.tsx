@@ -33,6 +33,8 @@ import {
   Bot,
   GripHorizontal,
   RotateCcw,
+  SkipBack,
+  SkipForward,
 } from 'lucide-react';
 import {
   getMovieDetails,
@@ -524,14 +526,212 @@ export function PlayerPage({
     };
   }, [data, mediaType, tmdbId, selectedSeason, selectedEpisode, season]);
 
-  // Capture postMessage playback progress events from embed providers if emitted
+  // AUTO-PLAY NEXT EPISODE STATE & SETTINGS
+  const [autoPlayNext, setAutoPlayNext] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('streamflix_autoplay_next');
+      return stored !== 'false';
+    }
+    return true;
+  });
+
+  const [nextEpisodeCountdown, setNextEpisodeCountdown] = useState<{
+    secondsLeft: number;
+    targetSeason: number;
+    targetEpisode: number;
+  } | null>(null);
+
+  const toggleAutoPlayNext = useCallback(() => {
+    setAutoPlayNext((prev) => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('streamflix_autoplay_next', String(next));
+      }
+      return next;
+    });
+  }, []);
+
+  // Compute Next Episode Details (either subsequent episode in current season, or next season premiere)
+  const nextEpisodeInfo = useMemo(() => {
+    if (mediaType !== 'tv' || !data) return null;
+    const currentSeasonEpisodes = season?.episodes || [];
+
+    // 1. Next episode within current season
+    const nextInCurrent = currentSeasonEpisodes.find(
+      (e) => e.episode_number === selectedEpisode + 1
+    );
+    if (nextInCurrent) {
+      return {
+        seasonNumber: selectedSeason,
+        episodeNumber: nextInCurrent.episode_number,
+        name: nextInCurrent.name || `Episode ${nextInCurrent.episode_number}`,
+        overview: nextInCurrent.overview,
+        stillPath: nextInCurrent.still_path || data.backdrop_path,
+        runtime: nextInCurrent.runtime,
+        isNextSeason: false,
+      };
+    }
+
+    // 2. If at the end of current season, search for subsequent season
+    const tvData = data as TmdbTv;
+    const allSeasons = (tvData.seasons || []).filter((s) => s.season_number > 0);
+    const nextSeason = allSeasons.find((s) => s.season_number === selectedSeason + 1);
+    if (nextSeason) {
+      return {
+        seasonNumber: nextSeason.season_number,
+        episodeNumber: 1,
+        name: nextSeason.name ? `${nextSeason.name} Episode 1` : `Season ${nextSeason.season_number} Episode 1`,
+        overview: nextSeason.overview,
+        stillPath: nextSeason.poster_path || data.backdrop_path,
+        runtime: null,
+        isNextSeason: true,
+      };
+    }
+
+    return null;
+  }, [mediaType, data, season, selectedSeason, selectedEpisode]);
+
+  // Compute Previous Episode Details (current season prior episode, or previous season finale)
+  const prevEpisodeInfo = useMemo(() => {
+    if (mediaType !== 'tv' || !data) return null;
+    const currentSeasonEpisodes = season?.episodes || [];
+
+    // 1. Previous episode in current season
+    const prevInCurrent = currentSeasonEpisodes.find(
+      (e) => e.episode_number === selectedEpisode - 1
+    );
+    if (prevInCurrent) {
+      return {
+        seasonNumber: selectedSeason,
+        episodeNumber: prevInCurrent.episode_number,
+      };
+    }
+
+    // 2. Previous season finale
+    if (selectedEpisode === 1 && selectedSeason > 1) {
+      const tvData = data as TmdbTv;
+      const allSeasons = (tvData.seasons || []).filter((s) => s.season_number > 0);
+      const prevSeason = allSeasons.find((s) => s.season_number === selectedSeason - 1);
+      if (prevSeason) {
+        return {
+          seasonNumber: prevSeason.season_number,
+          episodeNumber: prevSeason.episode_count || 1,
+        };
+      }
+    }
+
+    return null;
+  }, [mediaType, data, season, selectedSeason, selectedEpisode]);
+
+  // Play next episode immediately
+  const playNextEpisode = useCallback(() => {
+    if (!nextEpisodeInfo) return;
+    setNextEpisodeCountdown(null);
+    playbackPositionRef.current = 0;
+    setActiveSeconds(0);
+    initialSeekTimeRef.current = 0;
+
+    if (nextEpisodeInfo.seasonNumber !== selectedSeason) {
+      setSelectedSeason(nextEpisodeInfo.seasonNumber);
+    }
+    setSelectedEpisode(nextEpisodeInfo.episodeNumber);
+    setResumeNotice({ show: false });
+
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+    }
+
+    showHud({
+      icon: 'seek-fwd',
+      text: `Now Playing S${nextEpisodeInfo.seasonNumber} E${nextEpisodeInfo.episodeNumber}`,
+      subtext: nextEpisodeInfo.name,
+    });
+  }, [nextEpisodeInfo, selectedSeason, showHud]);
+
+  const cancelNextEpisodeCountdown = useCallback(() => {
+    setNextEpisodeCountdown(null);
+    showHud({
+      icon: 'pause',
+      text: 'Auto-play Cancelled',
+      subtext: 'Remaining on current episode',
+    });
+  }, [showHud]);
+
+  // Trigger episode end countdown or auto-play
+  const triggerEpisodeEnd = useCallback(() => {
+    if (mediaType !== 'tv' || !nextEpisodeInfo) return;
+    if (nextEpisodeCountdown) return;
+
+    if (autoPlayNext) {
+      setNextEpisodeCountdown({
+        secondsLeft: 7,
+        targetSeason: nextEpisodeInfo.seasonNumber,
+        targetEpisode: nextEpisodeInfo.episodeNumber,
+      });
+    } else {
+      showHud({
+        icon: 'play',
+        text: `Episode ended: Up next S${nextEpisodeInfo.seasonNumber} E${nextEpisodeInfo.episodeNumber}`,
+        subtext: nextEpisodeInfo.name,
+      });
+    }
+  }, [mediaType, nextEpisodeInfo, nextEpisodeCountdown, autoPlayNext, showHud]);
+
+  // Reset countdown whenever season, episode, or media ID manually changes
+  useEffect(() => {
+    setNextEpisodeCountdown(null);
+  }, [selectedSeason, selectedEpisode, tmdbId]);
+
+  // Auto-play Next Episode countdown timer
+  useEffect(() => {
+    if (!nextEpisodeCountdown) return;
+
+    if (nextEpisodeCountdown.secondsLeft <= 0) {
+      playNextEpisode();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setNextEpisodeCountdown((prev) => {
+        if (!prev) return null;
+        return { ...prev, secondsLeft: prev.secondsLeft - 1 };
+      });
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [nextEpisodeCountdown, playNextEpisode]);
+
+  // Capture postMessage playback progress events and ended signals from embed providers
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       try {
+        // String-based ended event check
+        if (typeof event.data === 'string' && (event.data === 'ended' || event.data.includes('"event":"ended"'))) {
+          triggerEpisodeEnd();
+        }
+
         const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
         if (msg && typeof msg === 'object') {
           const time = msg.currentTime || msg.time || msg.position;
           const dur = msg.duration || msg.total;
+
+          // Check for ended / completed events from embed players
+          const isEnded =
+            msg.event === 'ended' ||
+            msg.type === 'ended' ||
+            msg.status === 'ended' ||
+            msg.event === 'onComplete' ||
+            msg.event === 'complete' ||
+            msg.event === 'finish' ||
+            msg.isEnded === true ||
+            msg.ended === true ||
+            (msg.type === 'PLAYER_EVENT' && (msg.data?.event === 'ended' || msg.data?.state === 'ended')) ||
+            (typeof time === 'number' && typeof dur === 'number' && dur > 60 && time >= dur - 3);
+
+          if (isEnded) {
+            triggerEpisodeEnd();
+          }
+
           if (typeof time === 'number' && time > 0) {
             const cleanTime = Math.round(time);
             playbackPositionRef.current = cleanTime;
@@ -555,7 +755,7 @@ export function PlayerPage({
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [tmdbId, mediaType, selectedSeason, selectedEpisode, data]);
+  }, [tmdbId, mediaType, selectedSeason, selectedEpisode, data, triggerEpisodeEnd]);
 
   // Scroll detection for uninterrupted floating PiP
   useEffect(() => {
@@ -749,6 +949,62 @@ export function PlayerPage({
         return;
       }
 
+      // Countdown active controls (Enter to play now, Escape to cancel)
+      if (nextEpisodeCountdown) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          playNextEpisode();
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          cancelNextEpisodeCountdown();
+          return;
+        }
+      }
+
+      // 'N' or 'n': Next episode (for TV shows)
+      if (mediaType === 'tv' && (e.key === 'n' || e.key === 'N')) {
+        e.preventDefault();
+        if (nextEpisodeInfo) {
+          playNextEpisode();
+        } else {
+          showHud({
+            icon: 'play',
+            text: 'End of Series',
+            subtext: 'No next episode available',
+          });
+        }
+        return;
+      }
+
+      // 'P' or 'p': Previous episode (for TV shows)
+      if (mediaType === 'tv' && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        if (prevEpisodeInfo) {
+          setNextEpisodeCountdown(null);
+          playbackPositionRef.current = 0;
+          setActiveSeconds(0);
+          initialSeekTimeRef.current = 0;
+          if (prevEpisodeInfo.seasonNumber !== selectedSeason) {
+            setSelectedSeason(prevEpisodeInfo.seasonNumber);
+          }
+          setSelectedEpisode(prevEpisodeInfo.episodeNumber);
+          setResumeNotice({ show: false });
+          showHud({
+            icon: 'seek-bwd',
+            text: `Previous: S${prevEpisodeInfo.seasonNumber} E${prevEpisodeInfo.episodeNumber}`,
+          });
+        } else {
+          showHud({
+            icon: 'play',
+            text: 'First Episode',
+            subtext: 'No prior episode available',
+          });
+        }
+        return;
+      }
+
       // '?' or '/': Open keyboard shortcuts cheatsheet
       if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
         e.preventDefault();
@@ -768,6 +1024,13 @@ export function PlayerPage({
     handleSeekDelta,
     sendIframeCommand,
     showHud,
+    nextEpisodeCountdown,
+    playNextEpisode,
+    cancelNextEpisodeCountdown,
+    nextEpisodeInfo,
+    prevEpisodeInfo,
+    selectedSeason,
+    mediaType,
   ]);
 
   // Set Exact Minute and Second
@@ -1243,6 +1506,112 @@ export function PlayerPage({
                 </div>
               )}
 
+              {/* AUTO-PLAY NEXT EPISODE COUNTDOWN OVERLAY */}
+              {nextEpisodeCountdown && nextEpisodeInfo && (
+                <div className="absolute inset-0 z-40 flex items-end sm:items-center justify-end p-4 sm:p-8 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+                  <div className="w-full max-w-sm sm:max-w-md rounded-2xl border border-white/20 bg-slate-950/95 p-4 sm:p-5 shadow-[0_20px_60px_rgba(0,0,0,0.95)] backdrop-blur-2xl text-white">
+                    {/* Header with Countdown Badge */}
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="relative flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-black text-sm shadow-inner">
+                          {nextEpisodeCountdown.secondsLeft}
+                        </div>
+                        <div>
+                          <div className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                            <Sparkles size={13} className="text-emerald-400 animate-pulse" />
+                            <span>Auto-playing in {nextEpisodeCountdown.secondsLeft}s</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 font-medium">
+                            {nextEpisodeInfo.isNextSeason ? `Season ${nextEpisodeInfo.seasonNumber} Premiere` : 'Next Episode'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={cancelNextEpisodeCountdown}
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+                        title="Cancel auto-play"
+                      >
+                        <X size={17} />
+                      </button>
+                    </div>
+
+                    {/* Preview Thumbnail Card */}
+                    <div className="flex gap-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 mb-3.5">
+                      {nextEpisodeInfo.stillPath ? (
+                        <div className="relative h-18 w-28 sm:w-32 flex-shrink-0 overflow-hidden rounded-lg bg-slate-900 border border-white/10">
+                          <img
+                            src={stillUrl(nextEpisodeInfo.stillPath, 'w300')}
+                            alt={nextEpisodeInfo.name}
+                            className="h-full w-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
+                            <Play size={16} className="fill-white text-white drop-shadow" />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex h-18 w-28 sm:w-32 flex-shrink-0 items-center justify-center rounded-lg bg-slate-900 border border-white/10 text-slate-500">
+                          <Play size={20} />
+                        </div>
+                      )}
+
+                      <div className="flex-1 min-w-0">
+                        <span className="inline-block rounded bg-blue-500/20 border border-blue-500/30 px-1.5 py-0.5 text-[10px] font-bold text-blue-300 mb-1">
+                          S{nextEpisodeInfo.seasonNumber} E{nextEpisodeInfo.episodeNumber}
+                        </span>
+                        <h4 className="text-xs sm:text-sm font-bold text-white truncate">{nextEpisodeInfo.name}</h4>
+                        {nextEpisodeInfo.overview ? (
+                          <p className="mt-1 line-clamp-2 text-[11px] text-slate-400 leading-snug">
+                            {nextEpisodeInfo.overview}
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-slate-500 italic">No description available</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Animated Progress Bar */}
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10 mb-3.5">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-300 transition-all duration-1000 ease-linear rounded-full"
+                        style={{ width: `${Math.max(0, Math.min(100, (nextEpisodeCountdown.secondsLeft / 7) * 100))}%` }}
+                      />
+                    </div>
+
+                    {/* Actions Row */}
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.08]">
+                      <button
+                        type="button"
+                        onClick={toggleAutoPlayNext}
+                        className="text-[11px] font-semibold text-slate-400 hover:text-white transition-colors cursor-pointer"
+                        title="Toggle auto-play next episode on/off"
+                      >
+                        Auto-play: <span className="text-emerald-400 font-bold">ON</span> (click to toggle)
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={cancelNextEpisodeCountdown}
+                          className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/15 hover:text-white transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={playNextEpisode}
+                          className="flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3.5 py-1.5 text-xs font-black text-black hover:bg-emerald-400 transition-all shadow-md shadow-emerald-500/25 active:scale-95 cursor-pointer"
+                        >
+                          <Play size={13} fill="black" />
+                          <span>Play Now</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {miniPlayer && !pipDismissed && (
                 <div
                   className={`absolute top-2 inset-x-2 flex items-center justify-between pointer-events-auto bg-black/85 backdrop-blur-md rounded-xl px-2.5 py-1.5 text-xs text-white z-30 border border-white/10 transition-opacity duration-200 ${
@@ -1396,34 +1765,57 @@ export function PlayerPage({
                 <FastForward size={12} />
               </button>
 
-              {/* TV episode quick skipper */}
-              {mediaType === 'tv' && season?.episodes && (
-                <div className="flex items-center gap-1">
+              {/* TV episode quick skipper & Auto-Play Next */}
+              {mediaType === 'tv' && (
+                <div className="flex items-center gap-1.5">
                   <button
-                    disabled={selectedEpisode <= 1}
+                    disabled={!prevEpisodeInfo}
                     onClick={() => {
+                      if (!prevEpisodeInfo) return;
+                      setNextEpisodeCountdown(null);
                       playbackPositionRef.current = 0;
                       setActiveSeconds(0);
                       initialSeekTimeRef.current = 0;
-                      setSelectedEpisode((ep) => Math.max(1, ep - 1));
+                      if (prevEpisodeInfo.seasonNumber !== selectedSeason) {
+                        setSelectedSeason(prevEpisodeInfo.seasonNumber);
+                      }
+                      setSelectedEpisode(prevEpisodeInfo.episodeNumber);
+                      setResumeNotice({ show: false });
                     }}
-                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:pointer-events-none"
-                    title="Previous Episode"
+                    className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-35 disabled:pointer-events-none transition-colors"
+                    title={prevEpisodeInfo ? `Previous Episode (S${prevEpisodeInfo.seasonNumber} E${prevEpisodeInfo.episodeNumber})` : 'First episode'}
                   >
-                    Prev Ep
+                    <SkipBack size={12} />
+                    <span>Prev</span>
                   </button>
+
                   <button
-                    disabled={selectedEpisode >= (season.episodes.length || 1)}
-                    onClick={() => {
-                      playbackPositionRef.current = 0;
-                      setActiveSeconds(0);
-                      initialSeekTimeRef.current = 0;
-                      setSelectedEpisode((ep) => ep + 1);
-                    }}
-                    className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:pointer-events-none"
-                    title="Next Episode"
+                    disabled={!nextEpisodeInfo}
+                    onClick={playNextEpisode}
+                    className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-35 disabled:pointer-events-none transition-colors"
+                    title={nextEpisodeInfo ? `Next Episode (S${nextEpisodeInfo.seasonNumber} E${nextEpisodeInfo.episodeNumber} - ${nextEpisodeInfo.name})` : 'Final episode reached'}
                   >
-                    Next Ep
+                    <span>Next</span>
+                    <SkipForward size={12} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={toggleAutoPlayNext}
+                    className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer ${
+                      autoPlayNext
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+                        : 'border-white/10 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200'
+                    }`}
+                    title={
+                      autoPlayNext
+                        ? 'Auto-play Next Episode is ON: Automatically transitions to the next episode when current video ends'
+                        : 'Auto-play Next Episode is OFF: Click to enable auto-play'
+                    }
+                  >
+                    <Sparkles size={12} className={autoPlayNext ? 'text-emerald-400' : 'text-slate-500'} />
+                    <span className="hidden sm:inline">Auto-Next:</span>
+                    <span className="font-bold">{autoPlayNext ? 'ON' : 'OFF'}</span>
                   </button>
                 </div>
               )}
@@ -1887,71 +2279,89 @@ export function PlayerPage({
           </div>
 
           {/* UP NEXT (FOR TV SHOWS) */}
-          {mediaType === 'tv' && season?.episodes && selectedEpisode < season.episodes.length && (
+          {mediaType === 'tv' && nextEpisodeInfo && (
             <div className="rounded-2xl border border-blue-500/25 bg-gradient-to-b from-blue-950/30 to-[#090e17] p-5 shadow-xl">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-bold uppercase tracking-wider text-blue-400">
-                  Up Next · Episode {selectedEpisode + 1}
+                <span className="text-xs font-bold uppercase tracking-wider text-blue-400 flex items-center gap-1.5">
+                  <Sparkles size={13} className="text-blue-400" />
+                  <span>Up Next · S{nextEpisodeInfo.seasonNumber} E{nextEpisodeInfo.episodeNumber}</span>
                 </span>
-                <span className="rounded bg-blue-500/20 px-2 py-0.5 text-[10px] font-bold text-blue-300">
-                  Auto-cue
-                </span>
+                
+                <button
+                  type="button"
+                  onClick={toggleAutoPlayNext}
+                  className={`flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold transition-colors cursor-pointer ${
+                    autoPlayNext
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-white/10 text-slate-400 border border-white/10'
+                  }`}
+                  title={autoPlayNext ? 'Auto-play next episode is active' : 'Auto-play next episode is paused'}
+                >
+                  <span>Auto-Next: {autoPlayNext ? 'ON' : 'OFF'}</span>
+                </button>
               </div>
-              {(() => {
-                const next = season.episodes.find((e) => e.episode_number === selectedEpisode + 1);
-                if (!next) return null;
-                return (
-                  <button
-                    onClick={() => {
-                      playbackPositionRef.current = 0;
-                      setActiveSeconds(0);
-                      initialSeekTimeRef.current = 0;
-                      setSelectedEpisode(next.episode_number);
-                      if (playerRef.current) {
-                        playerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      }
-                    }}
-                    className="group w-full text-left"
-                  >
-                    <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black/40">
-                      {next.still_path ? (
-                        <img
-                          src={stillUrl(next.still_path)}
-                          alt={next.name}
-                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                          loading="lazy"
-                        />
-                      ) : data.backdrop_path ? (
-                        <img
-                          src={backdropUrl(data.backdrop_path, 'w780')}
-                          alt={next.name}
-                          className="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="grid h-full w-full place-items-center text-slate-700">
-                          <Play size={24} />
-                        </div>
-                      )}
-                      <div className="absolute inset-0 grid place-items-center bg-black/30 group-hover:bg-black/10 transition-colors">
-                        <div className="grid h-12 w-12 place-items-center rounded-full bg-white text-black shadow-lg transition-transform group-hover:scale-110">
-                          <Play size={20} fill="black" />
-                        </div>
-                      </div>
+
+              {nextEpisodeCountdown ? (
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 mb-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-emerald-300 flex items-center gap-1.5">
+                      <Sparkles size={12} className="animate-spin" />
+                      Starting in {nextEpisodeCountdown.secondsLeft} seconds...
+                    </span>
+                    <button
+                      type="button"
+                      onClick={cancelNextEpisodeCountdown}
+                      className="text-xs font-bold text-slate-300 hover:text-white underline cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={playNextEpisode}
+                className="group w-full text-left cursor-pointer"
+              >
+                <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black/40 border border-white/10">
+                  {nextEpisodeInfo.stillPath ? (
+                    <img
+                      src={stillUrl(nextEpisodeInfo.stillPath, 'w780')}
+                      alt={nextEpisodeInfo.name}
+                      className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="grid h-full w-full place-items-center text-slate-700">
+                      <Play size={24} />
                     </div>
-                    <div className="mt-3">
-                      <p className="font-bold text-white group-hover:text-blue-300 transition-colors">
-                        E{next.episode_number}. {next.name}
-                      </p>
-                      {next.overview && (
-                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-400">
-                          {next.overview}
-                        </p>
-                      )}
+                  )}
+                  <div className="absolute inset-0 grid place-items-center bg-black/30 group-hover:bg-black/10 transition-colors">
+                    <div className="grid h-12 w-12 place-items-center rounded-full bg-white text-black shadow-lg transition-transform group-hover:scale-110">
+                      <Play size={20} fill="black" />
                     </div>
-                  </button>
-                );
-              })()}
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-bold text-white group-hover:text-blue-300 transition-colors">
+                      {nextEpisodeInfo.isNextSeason ? `Season ${nextEpisodeInfo.seasonNumber} Premiere · ` : `E${nextEpisodeInfo.episodeNumber}. `}
+                      {nextEpisodeInfo.name}
+                    </p>
+                    {nextEpisodeInfo.runtime ? (
+                      <span className="text-[11px] text-slate-400 font-mono flex-shrink-0">
+                        {nextEpisodeInfo.runtime}m
+                      </span>
+                    ) : null}
+                  </div>
+                  {nextEpisodeInfo.overview && (
+                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-400">
+                      {nextEpisodeInfo.overview}
+                    </p>
+                  )}
+                </div>
+              </button>
             </div>
           )}
 
@@ -2233,13 +2643,16 @@ export function PlayerPage({
             <div className="mt-4 divide-y divide-white/[0.08]">
               {[
                 { key: 'Space', desc: 'Play / Pause stream' },
+                { key: 'N', desc: 'Next Episode (TV Series)' },
+                { key: 'P', desc: 'Previous Episode (TV Series)' },
+                { key: 'Enter', desc: 'Play Next Episode immediately during countdown' },
                 { key: 'F', desc: 'Toggle Fullscreen' },
                 { key: '← / →', desc: 'Seek 10 seconds backward / forward' },
                 { key: 'Shift + ← / →', desc: 'Seek 30 seconds backward / forward' },
                 { key: 'M', desc: 'Toggle Mute / Unmute audio' },
                 { key: 'T', desc: 'Toggle Theater mode' },
                 { key: '?', desc: 'Toggle this shortcuts guide' },
-                { key: 'Esc', desc: 'Exit Fullscreen or close dialog' },
+                { key: 'Esc', desc: 'Exit Fullscreen or cancel auto-play countdown' },
               ].map((s) => (
                 <div key={s.key} className="flex items-center justify-between py-2.5 text-xs">
                   <span className="text-slate-300 font-medium">{s.desc}</span>
